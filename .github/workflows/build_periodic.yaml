@@ -1,0 +1,68 @@
+name: Sync and Build jemalloc
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Add upstream remote
+        run: |
+          git remote remove upstream || true
+          git remote add upstream https://github.com/facebook/jemalloc.git
+          git fetch upstream
+
+      - name: Check for updates
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream/dev)
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          NEEDS_UPDATE=$(test "$UPSTREAM_COMMIT" != "$CURRENT_COMMIT" && echo true || echo false)
+          echo "Needs update: $NEEDS_UPDATE"
+          echo "Upstream dev: $UPSTREAM_COMMIT"
+          echo "Current HEAD: $CURRENT_COMMIT"
+          echo "::set-output name=needs_update::$NEEDS_UPDATE"
+
+      - name: Merge upstream
+        if: steps.check-for-updates.outputs.needs_update == 'true'
+        uses: ad-m/github-push-action@v0.6.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: true
+          branch: "dev"
+        env:
+          GIT_AUTHOR_NAME: ${{ github.actor }}
+          GIT_COMMITTER_NAME: ${{ github.actor }}
+          GIT_AUTHOR_EMAIL: ${{ github.actor }}@users.noreply.github.com
+          GIT_COMMITTER_EMAIL: ${{ github.actor }}@users.noreply.github.com
+
+      - name: Build
+        if: steps.check-for-updates.outputs.needs_update == 'true'
+        run: |
+          ./autogen.sh --enable-prof
+          make dist
+          make
+
+      - name: Commit binary
+        if: steps.build.outcome != 'skipped'
+        run: |
+          if [ -f lib/libjemalloc.so.2 ]; then
+            cd lib
+            mv libjemalloc.so.2 libjemalloc.so
+            cp lib/libjemalloc.so .
+
+                      
+            git config --global user.name "${GITHUB_ACTOR}"
+            git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+
+            git add libjemalloc.so
+            git commit -m "Update libjemalloc.so from build"
+
+            git push origin dev
+          fi
